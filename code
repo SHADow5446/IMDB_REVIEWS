@@ -1,0 +1,117 @@
+#download dataset
+import tensorflow_datasets as tfds
+import tensorflow as tf
+
+raw_train_set, raw_valid_set, raw_test_set = tfds.load(
+    name = "imdb_reviews",
+    split = ["train[:90%]", 'train[90%:]', 'test'],# train[90%:] is for valid set
+    as_supervised=True
+)
+tf.random.set_seed(42)
+train_set = raw_train_set.shuffle(5000,seed=42).batch(32).prefetch(1)
+valid_set = raw_valid_set.batch(32).prefetch(1)
+test_set = raw_test_set.batch(32).prefetch(1)
+#check some labels and reviews
+for review, label in raw_train_set.take(4):
+  print(review.numpy().decode("utf-8"))
+  print("Label: ", label.numpy())
+
+#model
+vocab_size = 1000
+text_vec_layer = tf.keras.layers.TextVectorization(max_tokens=vocab_size)
+text_vec_layer.adapt(train_set.map(lambda reviews, labels: reviews))
+
+embed_size = 128
+
+model = tf.keras.Sequential([
+    text_vec_layer,
+    tf.keras.layers.Embedding(vocab_size, embed_size, mask_zero = True ),#mask_zero mean tokens with ids=0 will be ignored increase acc
+    tf.keras.layers.GRU(128),
+    tf.keras.layers.Dense(1, activation = 'sigmoid')
+])
+model.summary()
+model.compile(loss='binary_crossentropy',
+              optimizer='nadam',
+              metrics=['accuracy'])
+
+history = model.fit(train_set, validation_data=valid_set, epochs=2)
+#Here we get 88% accuracy on validation set
+#lets explore other options
+
+#Using functional api
+#what is functional api?
+#The Keras functional API is a way to create models that are more flexible than the keras.Sequential API. 
+#The functional API can handle models with non-linear topology, shared layers, and even multiple inputs or outputs.
+
+inputs = tf.keras.layers.Input(shape=[], dtype=tf.string)
+tokens_ids = text_vec_layer(inputs)
+mask = tf.math.not_equal(tokens_ids, 0)
+z= tf.keras.layers.Embedding(vocab_size, embed_size)(tokens_ids)
+z= tf.keras.layers.GRU(128, dropout=0.2)(z, mask=mask)
+outputs = tf.keras.layers.Dense(1, activation='sigmoid')(z)
+model = tf.keras.Model(
+    inputs=[inputs],
+    outputs=[outputs]
+    )
+model.summary()
+model.compile(loss='binary_crossentropy',
+              optimizer='nadam',
+              metrics=['accuracy'])
+history = model.fit(train_set, validation_data = valid_set, epochs=2)
+#Here we get 85% accuracy on validation set
+  
+#lets use ragged tensor
+#what are ragged tensor?
+#Ragged tensors are the TensorFlow equivalent of nested variable-length lists. 
+#They make it easy to store and process data with non-uniform shapes, including:
+
+#Variable-length features, such as the set of actors in a movie.
+#Batches of variable-length sequential inputs, such as sentences or video clips.
+#Hierarchical inputs, such as text documents that are subdivided into sections, paragraphs, sentences, and words.
+#Individual fields in structured inputs, such as protocol buffers.
+
+vocab_size = 1000
+embed_size=128
+
+text_vec_layer_ragged = tf.keras.layers.TextVectorization(max_tokens=vocab_size,ragged=True)
+text_vec_layer_ragged.adapt(train_set.map(lambda reviews, labels: reviews))
+# use model without mask otherwise it will throw execption error in  GRU layer
+model = tf.keras.Sequential([
+    text_vec_layer_ragged,
+    tf.keras.layers.Embedding(vocab_size, embed_size),
+    tf.keras.layers.GRU(128),
+    tf.keras.layers.Dense(1, activation = 'sigmoid')
+])
+model.summary()
+model.compile(loss='binary_crossentropy',
+              optimizer='nadam',
+              metrics=['accuracy'])
+#ragged tensor
+text_vec_layer_ragged(['Great movie!','I love this Movie'])
+#output
+<tf.RaggedTensor [[86, 18], [10, 115, 11, 18]]>
+#without rageed tensor
+text_vec_layer(['Great movie!','I love this Movie'])
+#output
+<tf.Tensor: shape=(2, 4), dtype=int64, numpy=
+array([[ 86,  18,   0,   0],
+       [ 10, 115,  11,  18]])>
+history = model.fit(train_set, validation_data = valid_set, epochs=2)
+#Here we get 86% validation accuracy
+  
+#Using Transfer Learning
+import os
+import tensorflow_hub as hub
+
+os.environ["TFHUB_CACHE_DIR"] = "my_tfhub_cache"
+model = tf.keras.Sequential([
+    hub.KerasLayer("https://tfhub.dev/google/universal-sentence-encoder/4",
+                    trainable=True, dtype=tf.string, input_shape=[]),
+    tf.keras.layers.Dense(64, activation ="relu"),
+    tf.keras.layers.Dense(1, activation='sigmoid')
+])
+model.compile(loss='binary_crossentropy',
+              optimizer="nadam",
+              metrics = ['accuracy'])
+# training might take 10 to 20 hours and accuracy will be 90% above
+history = model.fit(train_set, validation_data=valid_set, epochs=10)
